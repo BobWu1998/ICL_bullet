@@ -16,6 +16,14 @@ import tensorflow as tf
 from env.kuka_env import Kuka_RT1
 from options import KukaOptions
 
+import tensorflow as tf
+import tensorflow_probability as tfp  # This line is important
+import tensorflow_hub as hub
+import math
+import numpy as np
+from tf_agents.trajectories import TimeStep
+import pdb
+
 class KukaTest():
   def __init__(self) -> None:
     options = KukaOptions()
@@ -24,7 +32,18 @@ class KukaTest():
                                         isDiscrete = False, 
                                         maxSteps = 10000000, 
                                         width = self.args.img_res[0], 
-                                        height = self.args.img_res[1])
+                                        height = self.args.img_res[1],
+                                        removeHeightHack=True,
+                                        )
+    
+    # load RT-1 and universal sentence embedding
+    self.model = tf.saved_model.load(self.args.model_dir)
+    self.use = hub.load(self.args.USE_dir) # universal sentence encoder
+    self.sequence_length = 6
+    self.batch_size = 1
+
+  def embed_sentence(self, input):
+    return self.use(input)
 
   def add_motors(self):
     self.motorsIds = []
@@ -36,19 +55,177 @@ class KukaTest():
     self.motorsIds.append(self.environment._p.addUserDebugParameter("yaw", -dv, dv, 0))
     self.motorsIds.append(self.environment._p.addUserDebugParameter("fingerAngle", 0, 0.3, .3))
 
+
+
+  def get_input_data(self, prev_model_output, instruction, language_embedding, obs, t):
+    # self.environment._kuka
+    # self.environment
+    # Define the batch size and sequence length
+    batch_size = self.batch_size
+    agent = self.environment._kuka
+
+    # For TimeStep
+    # step_type = 1 # np.random.randint(0, 2, size=(batch_size)).astype(np.int32)
+    # reward = 0 # np.random.uniform(0, 1, size=(batch_size)).astype(np.float32)
+    # discount = np.full((batch_size), 0.99).astype(np.float32)
+    step_type = np.full(batch_size, 1, dtype=np.int32)
+    reward = np.full(batch_size, 0, dtype=np.float32)
+    discount = np.full(batch_size, 0.99, dtype=np.float32)
+
+    orientation_start = np.array(agent.orn, dtype=np.float32)
+    orientation_start = np.repeat(orientation_start[None, :], batch_size, axis=0)
+
+    # construct obs 
+    obs = np.expand_dims(obs, axis=0)
+    obs = np.repeat(obs, batch_size, axis=0) 
+
+    base_pos_orn = np.array([-0.100000, 0.000000, 0.070000, 
+          0.000000, 0.000000, 0.000000, 1.000000], dtype=np.float32)
+    base_pos_orn = np.expand_dims(base_pos_orn, axis=0)
+    base_pos_orn = np.repeat(base_pos_orn, batch_size, axis=0) 
+
+    src_rotation = np.array([1, 0, 0, 0], dtype=np.float32)
+    src_rotation = np.expand_dims(src_rotation, axis=0)
+    src_rotation = np.repeat(src_rotation, batch_size, axis=0) 
+
+    vector_to_go = np.array(prev_model_output['vector_to_go'], dtype=np.float32)
+    vector_to_go = np.broadcast_to(vector_to_go, (batch_size, 3))
+    gripper_closedness_commanded = np.array(prev_model_output['gripper_closedness_commanded'], dtype=np.float32)
+    gripper_closedness_commanded = np.broadcast_to(gripper_closedness_commanded, (batch_size, 1))
+    rotation_delta_to_go = np.array(prev_model_output['rotation_delta_to_go'], dtype=np.float32)
+    rotation_delta_to_go = np.broadcast_to(rotation_delta_to_go, (batch_size, 4))
+
+    # update for step_num and t
+    step_num = np.array([self.environment._env_step], dtype=np.int32)
+    step_num = np.broadcast_to(step_num, (batch_size, 1, 1, 1, 1))
+    t = np.array([t], dtype=np.int32)
+    t = np.broadcast_to(t, (batch_size, 1, 1, 1, 1))
+    # # For observation
+    # observation = {
+    #     'gripper_closed': np.random.rand(batch_size, 1).astype(np.float32), # threshold on the clo
+    #     'workspace_bounds': np.random.rand(batch_size, 3, 3).astype(np.float32), # make it as big as possible
+    #     'natural_language_embedding': np.random.rand(batch_size, 512).astype(np.float32),
+    #     'orientation_start': np.random.rand(batch_size, 4).astype(np.float32),
+    #     'image': np.random.randint(0, 256, size=(batch_size, 256, 320, 3)).astype(np.uint8),
+    #     'base_pose_tool_reached': np.random.rand(batch_size, 7).astype(np.float32),
+    #     'height_to_bottom': np.random.rand(batch_size, 1).astype(np.float32),
+    #     'orientation_box': np.random.rand(batch_size, 2, 3).astype(np.float32),
+    #     'natural_language_instruction': np.array([b'This is a fake instruction']*batch_size, dtype=np.object),
+    #     'vector_to_go': np.random.rand(batch_size, 3).astype(np.float32),
+    #     'src_rotation': np.random.rand(batch_size, 4).astype(np.float32),
+    #     'gripper_closedness_commanded': np.random.rand(batch_size, 1).astype(np.float32),
+    #     'robot_orientation_positions_box': np.random.rand(batch_size, 3, 3).astype(np.float32),
+    #     'rotation_delta_to_go': np.random.rand(batch_size, 3).astype(np.float32)
+    # }
+    observation = {
+        'gripper_closed': np.full((batch_size, 1), agent.gripper_closedness, dtype=np.float32),
+        'workspace_bounds': np.random.rand(batch_size, 3, 3).astype(np.float32), # definition TBD
+        'natural_language_embedding': language_embedding,
+        'orientation_start': orientation_start,
+        'image': obs.astype(np.uint8),
+        'base_pose_tool_reached': base_pos_orn,
+        'height_to_bottom': np.random.rand(batch_size, 1).astype(np.float32), # definition TBD
+        'orientation_box': np.random.rand(batch_size, 2, 3).astype(np.float32), # definition TBD
+        'natural_language_instruction': np.array(instruction*batch_size, dtype=np.object),
+        'vector_to_go': vector_to_go, # np.random.rand(batch_size, 3).astype(np.float32),
+        'src_rotation': src_rotation, # the rotation of the arm wrt to the base?
+        'gripper_closedness_commanded': np.random.rand(batch_size, 1).astype(np.float32),
+        'robot_orientation_positions_box': np.random.rand(batch_size, 3, 3).astype(np.float32), # definition TBD
+        'rotation_delta_to_go': np.random.rand(batch_size, 3).astype(np.float32)
+    }
+    
+    time_step = {
+        'step_type': step_type,
+        'reward': reward,
+        'discount': discount,
+        'observation': observation
+    }
+    time_step_data = TimeStep(
+        step_type=time_step['step_type'],
+        reward=time_step['reward'],
+        discount=time_step['discount'],
+        observation=time_step['observation'],
+    )
+
+    # For ActionTokens, etc
+    # action_tokens = np.random.randint(0, 2, size=(batch_size, self.sequence_length, 11, 1, 1)).astype(np.int32)
+    # image_seq = np.random.randint(0, 256, size=(batch_size, self.sequence_length, 256, 320, 3)).astype(np.uint8)
+    # step_num = np.random.randint(0, 10, size=(batch_size, 1, 1, 1, 1)).astype(np.int32)
+    # t = np.random.randint(0, 10, size=(batch_size, 1, 1, 1, 1)).astype(np.int32)
+
+    aux_input = {
+        'action_tokens': self.action_tokens,
+        'image': self.image_seq,
+        'step_num': step_num,
+        't': t
+    }
+
+    # Model input
+    model_input = (time_step_data, aux_input, None)
+    return model_input
+
+  def updata_seq(self, obs):
+    self.image_seq[:, :-1, :, :, :] = self.image_seq[:, 1:, :, :, :] 
+    self.image_seq[:, -1, :, :, :] = obs
+
   def main(self):
     self.environment.reset()
     self.add_motors()
 
-    done = False
-    while (not done):
+    instruction = ['pick up an object']
 
-      action = []
-      for motorId in self.motorsIds:
-        action.append(self.environment._p.readUserDebugParameter(motorId))
-      obs, reward, done, info = self.environment.step(action)
-      print(obs.shape)
+    # input_data = {'image': None, 
+    #               'natural_language_embedding': self.use(instruction)}
+
+    instruction_embedding = self.use(instruction)
+
+    done = False
+    obs = None
+    prev_model_output = None
+    self.action_tokens = np.zeros((self.batch_size, self.sequence_length, 11, 1, 1), dtype=np.int32)
+    self.image_seq = np.zeros((self.batch_size, self.sequence_length, 256, 320, 3), dtype=np.uint8)
+    t = 0
+    while (not done):
+      print('_env_step', self.environment._env_step)
+      if self.environment._env_step == 0:
+        obs = self.environment._get_observation()
+        prev_model_output = {
+          'vector_to_go': self.environment._kuka.endEffectorPos,
+          'gripper_closedness_commanded': 0,
+          'rotation_delta_to_go': [1, 0, 0, 0]
+        }
+      else:
+        prev_model_output = {
+          'vector_to_go': self.environment._kuka.endEffectorPos + result[0]['world_vector'].numpy(),
+          'gripper_closedness_commanded': 0,
+          'rotation_delta_to_go': [1, 0, 0, 0]
+        }
+
+      input_data = self.get_input_data(prev_model_output, instruction, instruction_embedding, obs, t)
+      result = self.model.action(input_data[0], input_data[1], None)
+      # print(result)
+      # pdb.set_trace()
+
+      # action = []
+      # for motorId in self.motorsIds:
+      #   action.append(self.environment._p.readUserDebugParameter(motorId))
       
+      # print(action)
+      # action = [0, 0, -1, 0, 0.3]
+      # action = [0, 0, -1, 0, 0, 0, 0.3]
+      action = np.hstack((result[0]['world_vector'].numpy(), result[0]['rotation_delta'].numpy(),
+                          result[0]['gripper_closedness_action'].numpy()))[0]
+
+      obs, reward, done, info = self.environment.step(action)
+      # self.environment._kuka.rollAngle
+      # print('rollAngle', self.environment._kuka.rollAngle)
+      # update action_tokens and image_sequence
+      self.updata_seq(obs)
+      self.action_tokens = result[1]['action_tokens'].numpy()
+
+      t += 1
+
+
 if __name__ == "__main__":
   while (1):
     env = KukaTest()

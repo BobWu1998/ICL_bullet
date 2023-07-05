@@ -4,8 +4,9 @@ import os
 from gym import spaces
 import time
 import pybullet as p
-# from . import kuka
-from pybullet_envs.bullet import kuka
+
+# from pybullet_envs.bullet import kuka
+import env.kuka as kuka
 
 import numpy as np
 import pybullet_data
@@ -158,6 +159,7 @@ class Kuka_RT1(KukaGymEnv):
     # Randomize positions of each object urdf.
     objectUids = []
     for urdf_name in urdfList:
+      print(urdf_name)
       xpos = 0.4 + self._blockRandom * random.random()
       ypos = self._blockRandom * (random.random() - .5)
       angle = np.pi / 2 + self._blockRandom * np.pi * random.random()
@@ -199,26 +201,37 @@ class Kuka_RT1(KukaGymEnv):
       # Static type assertion for integers.
       assert isinstance(action, int)
       if self._removeHeightHack:
-        dx = [0, -dv, dv, 0, 0, 0, 0, 0, 0][action]
-        dy = [0, 0, 0, -dv, dv, 0, 0, 0, 0][action]
-        dz = [0, 0, 0, 0, 0, -dv, dv, 0, 0][action]
-        da = [0, 0, 0, 0, 0, 0, 0, -0.25, 0.25][action]
+        dx = [0, -dv, dv, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0][action]
+        dy = [0, 0, 0, -dv, dv, 0, 0, 0, 0, 0, 0, 0, 0][action]
+        dz = [0, 0, 0, 0, 0, -dv, dv, 0, 0, 0, 0, 0, 0][action]
+        droll = [0, 0, 0, 0, 0, 0, 0, -0.25, 0.25, 0, 0, 0, 0][action]
+        dpitch = [0, 0, 0, 0, 0, 0, 0, 0, 0, -0.25, 0.25, 0, 0][action]
+        dyaw = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -0.25, 0.25][action]
       else:
-        dx = [0, -dv, dv, 0, 0, 0, 0][action]
-        dy = [0, 0, 0, -dv, dv, 0, 0][action]
+        dx = [0, -dv, dv, 0, 0, 0, 0, 0, 0, 0, 0][action]
+        dy = [0, 0, 0, -dv, dv, 0, 0, 0, 0, 0, 0][action]
         dz = -dv
-        da = [0, 0, 0, 0, 0, -0.25, 0.25][action]
+        droll = [0, 0, 0, 0, 0, 0, 0, -0.25, 0.25, 0, 0, 0, 0][action]
+        dpitch = [0, 0, 0, 0, 0, 0, 0, 0, 0, -0.25, 0.25, 0, 0][action]
+        dyaw = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -0.25, 0.25][action]
     else:
       dx = dv * action[0]
       dy = dv * action[1]
       if self._removeHeightHack:
         dz = dv * action[2]
-        da = 0.25 * action[3]
+        # da = 0.25 * action[3]
+        droll = 0.25 * action[3]
+        dpitch = 0.25 * action[4]
+        dyaw = 0.25 * action[5]
       else:
         dz = -dv
-        da = 0.25 * action[2]
+        # da = 0.25 * action[2]
+        droll = 0.25 * action[3]
+        dpitch = 0.25 * action[4]
+        dyaw = 0.25 * action[5]
 
-    return self._step_continuous([dx, dy, dz, da, 0.3])
+    # return self._step_continuous([dx, dy, dz, da, 0.3])
+    return self._step_continuous([dx, dy, dz, droll, dpitch, dyaw, 0.3])
 
   def _step_continuous(self, action):
     """Applies a continuous velocity-control action.
@@ -234,6 +247,7 @@ class Kuka_RT1(KukaGymEnv):
     """
     # Perform commanded action.
     self._env_step += 1
+    print(action)
     self._kuka.applyAction(action)
     for _ in range(self._actionRepeat):
       p.stepSimulation()
@@ -248,7 +262,7 @@ class Kuka_RT1(KukaGymEnv):
     if end_effector_pos[2] <= 0.1:
       finger_angle = 0.3
       for _ in range(500):
-        grasp_action = [0, 0, 0, 0, finger_angle]
+        grasp_action = [0, 0, 0, 0, 0, 0, finger_angle]
         self._kuka.applyAction(grasp_action)
         p.stepSimulation()
         #if self._renders:
@@ -257,7 +271,7 @@ class Kuka_RT1(KukaGymEnv):
         if finger_angle < 0:
           finger_angle = 0
       for _ in range(500):
-        grasp_action = [0, 0, 0.001, 0, finger_angle]
+        grasp_action = [0, 0, 0.001, 0, 0, 0, finger_angle]
         self._kuka.applyAction(grasp_action)
         p.stepSimulation()
         if self._renders:
